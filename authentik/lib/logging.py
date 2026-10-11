@@ -1,10 +1,13 @@
 """logging helpers"""
 
 import logging
+from contextvars import ContextVar
 from logging import Logger
 from os import getpid
+from typing import Any
 
 import structlog
+from structlog.types import EventDict
 
 from authentik.lib.config import CONFIG
 
@@ -16,6 +19,9 @@ LOG_PRE_CHAIN = [
     structlog.processors.TimeStamper(fmt="iso", utc=False),
     structlog.processors.StackInfoRenderer(),
 ]
+
+# Entries diverted by `authentik.events.logs.capture_logs` in the current context
+LOG_CAPTURE: ContextVar[list[EventDict] | None] = ContextVar("authentik_log_capture", default=None)
 
 
 def get_log_level():
@@ -44,6 +50,7 @@ def structlog_configure():
             structlog.processors.ExceptionRenderer(
                 structlog.tracebacks.ExceptionDictTransformer(show_locals=CONFIG.get_bool("debug"))
             ),
+            capture_processor,
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -124,3 +131,12 @@ def add_process_id(logger: Logger, method_name: str, event_dict):
     """Add the current process ID"""
     event_dict["pid"] = getpid()
     return event_dict
+
+
+def capture_processor(logger: Any, method_name: str, event_dict: EventDict) -> EventDict:
+    """Divert the entry to the `capture_logs` block active in the current context, if any"""
+    entries = LOG_CAPTURE.get()
+    if entries is None:
+        return event_dict
+    entries.append(event_dict)
+    raise structlog.DropEvent
